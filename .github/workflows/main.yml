@@ -38,7 +38,7 @@ jobs:
       - name: Projet Capacitor
         run: |
           npm init -y
-          npm install --no-audit --no-fund --legacy-peer-deps @capacitor/core@7 @capacitor/android@7 @capacitor-community/background-geolocation
+          npm install --no-audit --no-fund --legacy-peer-deps @capacitor/core@7 @capacitor/android@7 @capacitor/share@7 @capacitor-community/background-geolocation
           npm install --no-audit --no-fund --legacy-peer-deps -D @capacitor/cli@7
           cat > capacitor.config.json <<'EOF'
           {
