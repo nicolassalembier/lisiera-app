@@ -54,9 +54,34 @@ if (nativeBG) {
     Object.defineProperty(navigator, 'share', { value: nativeShare, configurable: true, writable: true });
     Object.defineProperty(navigator, 'canShare', { value: function () { return true; }, configurable: true, writable: true });
   } catch (e) {}
-}
-"""
-
+} 
+if (nativeBG) { 
+  try { 
+    const AppPlugin = CAP.registerPlugin('App'); 
+    const onInviteUrl = function (u) { 
+      const m = /\/join\/([A-Za-z0-9]{6})/.exec(String(u || '')); 
+      if (!m) return; 
+      const code = m[1].toUpperCase(); 
+      if (S) { 
+        if (S.code !== code) toast('Quittez d’abord la battue en cours pour en rejoindre une autre.'); 
+        return; 
+      } 
+      $('j_code').value = code; 
+      show('home'); 
+      setTimeout(function () { 
+        try { 
+          $('j_name').focus(); 
+        } catch (e) {} 
+      }, 300); 
+    }; 
+    AppPlugin.addListener('appUrlOpen', function (ev) { 
+      onInviteUrl(ev && ev.url); 
+    }); 
+    AppPlugin.getLaunchUrl().then(function (r) { 
+      onInviteUrl(r && r.url); 
+    }).catch(function () {}); 
+  } catch (e) {} 
+} """
 
 
 def rep(old, new):
@@ -78,7 +103,7 @@ rep('if (!wakeLock && !ended)', 'if (!nativeBG && !wakeLock && !ended)')
 rep("let h = kv('Durée de session', fmtAge(dur));",
     "let h = kv('Mode', nativeBG ? (bgPlugin ? 'App Android (arrière-plan)' : 'App Android (plugin GPS absent ' + bgError + ')') : 'Navigateur') + kv('Durée de session', fmtAge(dur));")
 rep("const url = location.origin + location.pathname + '#' + S.code;",
-    "const url = (nativeBG ? 'https://lisiera.fr/' : location.origin + location.pathname) + '#' + S.code;")
+    "const url = (nativeBG ? 'https://lisiera.fr/join/' : location.origin + location.pathname) + '#' + S.code;")
 rep("ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);",
     "ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);\n"
     "if (nativeBG) { ex.onclick = ev => { ev.preventDefault(); prompt('Copiez ce lien, puis ouvrez-le dans Chrome :', ex.href); }; }")
