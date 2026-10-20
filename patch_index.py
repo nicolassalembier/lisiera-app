@@ -40,7 +40,23 @@ function startNativeGPS() {
 function stopNativeGPS() {
   if (bgPlugin && bgWatcher !== null) { try { bgPlugin.removeWatcher({ id: bgWatcher }); } catch (e) {} bgWatcher = null; }
 }
+if (nativeBG) {
+  try {
+    const SharePlugin = CAP.registerPlugin('Share');
+    const nativeShare = function (d) {
+      d = d || {};
+      return SharePlugin.share({ title: d.title, text: d.text, url: d.url, dialogTitle: 'Inviter avec…' })
+        .catch(function (e) {
+          if (/cancel/i.test(String((e && e.message) || e))) { throw new DOMException('Share canceled', 'AbortError'); }
+          throw e;
+        });
+    };
+    Object.defineProperty(navigator, 'share', { value: nativeShare, configurable: true, writable: true });
+    Object.defineProperty(navigator, 'canShare', { value: function () { return true; }, configurable: true, writable: true });
+  } catch (e) {}
+}
 """
+
 
 
 def rep(old, new):
