@@ -67,7 +67,14 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-
+      
+      - name: Empreinte de signature (assetlinks.json) 
+        run: | 
+          FP=$(keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android 2>/dev/null | grep 'SHA256:' | head -1 | sed 's/.*SHA256: *//') 
+          echo "Empreinte SHA-256 : $FP" 
+          echo "### Empreinte SHA-256 de signature" >> "$GITHUB_STEP_SUMMARY" 
+          echo "$FP" >> "$GITHUB_STEP_SUMMARY"
+          
       - name: Publier l'APK
         env:
           GH_TOKEN: ${{ github.token }}
