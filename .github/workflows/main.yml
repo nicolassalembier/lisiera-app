@@ -67,13 +67,17 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
-      
-      - name: Empreinte de signature (assetlinks.json) 
-        run: | 
-          FP=$(keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android 2>/dev/null | grep 'SHA256:' | head -1 | sed 's/.*SHA256: *//') 
-          echo "Empreinte SHA-256 : $FP" 
-          echo "### Empreinte SHA-256 de signature" >> "$GITHUB_STEP_SUMMARY" 
+
+      - name: Empreinte de signature (assetlinks.json)
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          RAW=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep 'certificate SHA-256 digest' | head -1 | sed 's/.*: *//')
+          FP=$(echo "$RAW" | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')
+          echo "Empreinte SHA-256 : $FP"
+          echo "### Empreinte SHA-256 de signature" >> "$GITHUB_STEP_SUMMARY"
           echo "$FP" >> "$GITHUB_STEP_SUMMARY"
+          echo "Emplacement du keystore :"
+          find / -name debug.keystore 2>/dev/null || true
           
       - name: Publier l'APK
         env:
