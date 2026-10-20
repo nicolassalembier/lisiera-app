@@ -59,7 +59,7 @@ if (nativeBG) {
   try { 
     const AppPlugin = CAP.registerPlugin('App'); 
     const onInviteUrl = function (u) { 
-      const m = /\/join\/([A-Za-z0-9]{6})/.exec(String(u || '')); 
+      const m = /\/join\/#?([A-Za-z0-9]{6})/.exec(String(u || '')); 
       if (!m) return; 
       const code = m[1].toUpperCase(); 
       if (S) { 
