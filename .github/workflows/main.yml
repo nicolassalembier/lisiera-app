@@ -43,7 +43,7 @@ jobs:
       - name: Page web de l'application
         run: |
           mkdir -p www
-          curl -fsSL https://lisiera.fr/index.html -o www/index.html
+          curl -fsSL https://lisiera.fr/app.html -o www/index.html
           cp node_modules/@capacitor/core/dist/capacitor.js www/capacitor.js || curl -fsSL https://cdn.jsdelivr.net/npm/@capacitor/core@7/dist/capacitor.js -o www/capacitor.js
           python3 patch_index.py www/index.html
       - name: Projet Android
