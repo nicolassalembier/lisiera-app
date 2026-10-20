@@ -45,7 +45,7 @@ if (nativeBG) {
     const SharePlugin = CAP.registerPlugin('Share');
     const nativeShare = function (d) {
       d = d || {};
-      return SharePlugin.share({ title: d.title, text: d.text, url: d.url, dialogTitle: 'Inviter avec…' })
+      return SharePlugin.share({ title: d.title, text: d.text || undefined, url: d.text ? undefined : d.url, dialogTitle: 'Inviter avec…' })
         .catch(function (e) {
           if (/cancel/i.test(String((e && e.message) || e))) { throw new DOMException('Share canceled', 'AbortError'); }
           throw e;
