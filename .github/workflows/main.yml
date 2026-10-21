@@ -53,6 +53,12 @@ jobs:
           npx cap add android
           python3 patch_android.py
           npx cap sync android
+
+      - name: Icône de l'application
+        run: |
+          npm install --no-save --no-audit --no-fund --legacy-peer-deps sharp
+          node make_icons.js
+
       - name: Compiler l'APK
         working-directory: android
         run: |
