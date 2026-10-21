@@ -46,6 +46,9 @@ MAIN = ('package fr.lisiera.app;\n\n'
         '        super.onCreate(savedInstanceState);\n'
         '    }\n'
         '}\n')
+if 'android.permission.CAMERA' not in s:
+    k = s.find('<application')
+    s = s[:k] + '    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n' + s[k:]
 if 'android.permission.WAKE_LOCK' not in s:
     k = s.find('<application')
     s = s[:k] + '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n' + s[k:]
