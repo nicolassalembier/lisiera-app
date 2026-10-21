@@ -37,7 +37,9 @@ jobs:
             "appId": "fr.lisiera.app",
             "appName": "Lisiera",
             "webDir": "www",
-            "server": { "androidScheme": "https" }
+            "server": { "androidScheme": "https" },
+            "android": { "useLegacyBridge": true },
+            "plugins": { "CapacitorHttp": { "enabled": true } }
           }
           EOF
       - name: Page web de l'application
