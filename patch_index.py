@@ -20,12 +20,26 @@ function onNativeLocation(loc, err) {
     return;
   }
   gpsState = 'ok';
+  if (!trackerOn) trackerStart();
+
   const t = (loc.time && Math.abs(Date.now() - loc.time) < 3600000) ? loc.time : Date.now();
   lastFix = { lat: loc.latitude, lng: loc.longitude, acc: loc.accuracy, speed: loc.speed, heading: loc.bearing, ts: t };
   stats.accSum += loc.accuracy; stats.accN++;
   drawMe();
   if (!firstViewDone) { firstViewDone = true; if (!zoneLayer) map.setView([loc.latitude, loc.longitude], 17); }
   if (Date.now() - lastSentAt >= sendEvery * 1000 - 400) tick();
+}
+let trackerOn = false;
+const TrackerPlugin = nativeBG ? CAP.registerPlugin('LisieraTracker') : null;
+function trackerStart() {
+  if (!TrackerPlugin || !S) return;
+  TrackerPlugin.start({ url: API + '?a=ping', code: S.code, token: S.token, intervalSec: sendEvery })
+    .then(function () { trackerOn = true; })
+    .catch(function () { trackerOn = false; });
+}
+function trackerStop() {
+  trackerOn = false;
+  if (TrackerPlugin) { TrackerPlugin.stop().catch(function () {}); }
 }
 function startNativeGPS() {
   if (!bgPlugin) { gpsState = 'error'; return; }
@@ -38,6 +52,7 @@ function startNativeGPS() {
   }, onNativeLocation).then(id => { bgWatcher = id; }).catch(e => { gpsState = 'error'; bgError = String(e); });
 }
 function stopNativeGPS() {
+  trackerStop();
   if (bgPlugin && bgWatcher !== null) { try { bgPlugin.removeWatcher({ id: bgWatcher }); } catch (e) {} bgWatcher = null; }
 }
 if (nativeBG) {
@@ -107,6 +122,7 @@ rep("const url = location.origin + location.pathname + '#' + S.code;",
 rep("ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);",
     "ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);\n"
     "if (nativeBG) { ex.onclick = ev => { ev.preventDefault(); prompt('Copiez ce lien, puis ouvrez-le dans Chrome :', ex.href); }; }")
-
+rep('function restartTimers() {', 'function restartTimers() {\nif (nativeBG) trackerStart();')
 open(path, 'w', encoding='utf-8').write(s)
+
 print('patch_index OK')
