@@ -36,5 +36,30 @@ if 'android:host="lisiera.fr"' not in s:
         sys.exit('ERREUR patch_android : balise </activity> introuvable') 
     s = s[:j] + LINK + ' ' + s[j:]
 
+MAIN = ('package fr.lisiera.app;\n\n'
+        'import android.os.Bundle;\n'
+        'import com.getcapacitor.BridgeActivity;\n\n'
+        'public class MainActivity extends BridgeActivity {\n'
+        '    @Override\n'
+        '    public void onCreate(Bundle savedInstanceState) {\n'
+        '        registerPlugin(LisieraTrackerPlugin.class);\n'
+        '        super.onCreate(savedInstanceState);\n'
+        '    }\n'
+        '}\n')
+if 'android.permission.WAKE_LOCK' not in s:
+    k = s.find('<application')
+    s = s[:k] + '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n' + s[k:]
+if 'LisieraTrackerService' not in s:
+    k = s.find('</application>')
+    if k < 0:
+        sys.exit('ERREUR patch_android : balise </application> introuvable')
+    s = s[:k] + '    <service android:name=".LisieraTrackerService" android:exported="false" android:foregroundServiceType="location" />\n' + s[k:]
 open(p, 'w', encoding='utf-8').write(s)
+import os, shutil
+d = 'android/app/src/main/java/fr/lisiera/app'
+os.makedirs(d, exist_ok=True)
+for f in ('LisieraTrackerPlugin.java', 'LisieraTrackerService.java'):
+    shutil.copy(f, os.path.join(d, f))
+open(os.path.join(d, 'MainActivity.java'), 'w', encoding='utf-8').write(MAIN)
+
 print('patch_android OK :', len(add.splitlines()), 'ligne(s) ajoutée(s)')
