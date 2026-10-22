@@ -25,9 +25,10 @@ jobs:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           test -n "$KS_B64" || { echo "Secret ANDROID_KEYSTORE_B64 manquant"; exit 1; }
-          mkdir -p ~/.android
+          mkdir -p ~/.android ~/.config/.android
           echo "$KS_B64" | base64 -d > ~/.android/debug.keystore
-          chmod 600 ~/.android/debug.keystore
+          cp ~/.android/debug.keystore ~/.config/.android/debug.keystore
+          chmod 600 ~/.android/debug.keystore ~/.config/.android/debug.keystore
       - name: Projet Capacitor
         run: |
           npm init -y
