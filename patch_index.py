@@ -122,7 +122,7 @@ rep("const url = location.origin + location.pathname + '#' + S.code;",
 rep("ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);",
     "ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' + encodeURIComponent(S.token);\n"
     "if (nativeBG) { ex.onclick = ev => { ev.preventDefault(); prompt('Copiez ce lien, puis ouvrez-le dans Chrome :', ex.href); }; }")
-rep('function restartTimers() {', 'function restartTimers() {\nif (nativeBG) trackerStart();')
+rep('function restartTimers() {', 'function restartTimers() {\nif (nativeBG && recOn) trackerStart();')
 open(path, 'w', encoding='utf-8').write(s)
 
 print('patch_index OK')
