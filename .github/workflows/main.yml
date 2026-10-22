@@ -20,13 +20,14 @@ jobs:
         run: |
           SDKM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
           yes | "$SDKM" --licenses > /dev/null || true
-      - name: Clé de signature stable
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.config/.android/debug.keystore
-            ~/.android/debug.keystore
-          key: lisiera-debug-keystore-v2
+      - name: Clé de signature (secret)
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          test -n "$KS_B64" || { echo "Secret ANDROID_KEYSTORE_B64 manquant"; exit 1; }
+          mkdir -p ~/.android
+          echo "$KS_B64" | base64 -d > ~/.android/debug.keystore
+          chmod 600 ~/.android/debug.keystore
       - name: Projet Capacitor
         run: |
           npm init -y
