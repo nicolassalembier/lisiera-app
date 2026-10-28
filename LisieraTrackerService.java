@@ -19,6 +19,14 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import org.json.JSONArray;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+
 
 import org.json.JSONObject;
 
@@ -54,6 +62,18 @@ public class LisieraTrackerService extends Service {
     private ScheduledExecutorService sched;
     private PowerManager.WakeLock wake;
     private boolean scheduled = false;
+    static volatile boolean appVisible = false;
+    static volatile boolean alertSound = true;
+    private static final String CH_WK = "lisiera_wk";
+    private static final String CH_WK_Q = "lisiera_wk_q";
+    private static final int ID_WK = 4731;
+    private static final long WK_REARM_MS = 120000L, WK_FORGET_MS = 600000L;
+    private static final double WK_TTL_S = 120.0, WK_CHEF_D = 200.0, WK_ME_D = 200.0, WK_ME_D3 = 100.0;
+    private static final String[] WK_DIRS = {"N", "NE", "E", "SE", "S", "SO", "O", "NO"};
+    private static final class WkEp { int max = 0; long outAt = 0; }
+    private static final class WkIt { String id; int lvl; boolean inside; double dme = -1; String dir = ""; double dz; }
+    private final HashMap<String, WkEp> wkEp = new HashMap<String, WkEp>();
+
 
     private final LocationListener listener = new LocationListener() {
         @Override
@@ -190,6 +210,149 @@ public class LisieraTrackerService extends Service {
         });
     }
 
+        /* ---------- alerte « promeneur signale » ecran eteint (memes regles que la page) ---------- */
+
+    private static double wkHav(double la1, double lo1, double la2, double lo2) {
+        double R = 6371000.0, rad = Math.PI / 180.0;
+        double dLat = (la2 - la1) * rad, dLng = (lo2 - lo1) * rad;
+        double x = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(la1 * rad) * Math.cos(la2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return 2 * R * Math.asin(Math.sqrt(x));
+    }
+
+    private static String wkDir(double la1, double lo1, double la2, double lo2) {
+        double rad = Math.PI / 180.0;
+        double y = Math.sin((lo2 - lo1) * rad) * Math.cos(la2 * rad);
+        double x = Math.cos(la1 * rad) * Math.sin(la2 * rad) - Math.sin(la1 * rad) * Math.cos(la2 * rad) * Math.cos((lo2 - lo1) * rad);
+        double deg = (Math.atan2(y, x) / rad + 360.0) % 360.0;
+        return WK_DIRS[(int) (Math.round(deg / 45.0) % 8)];
+    }
+
+    private static String wkRound(double m) {
+        double v = Math.max(10.0, Math.round(m / 10.0) * 10.0);
+        return v < 1000.0 ? "≈ " + Math.round(v) + " m" : String.format(Locale.FRANCE, "≈ %.1f km", v / 1000.0);
+    }
+
+    private void handleWalkers(JSONObject j) {
+        try {
+            JSONObject b = j.optJSONObject("battue"), me = j.optJSONObject("me");
+            JSONArray ws = j.optJSONArray("walkers");
+            long now = System.currentTimeMillis();
+            boolean on = b != null && me != null && "active".equals(b.optString("status")) && b.optBoolean("walker_alerts", true);
+            boolean mgr = me != null && me.optBoolean("is_chef", false);
+            boolean obs = me != null && "observateur".equals(me.optString("role", "poste"));
+            Location l = last;
+            long fa = l == null ? Long.MAX_VALUE : now - l.getTime();
+            boolean haveMe = !obs && l != null && fa < 120000L && fa > -60000L;
+            List<WkIt> fired = new ArrayList<WkIt>();
+            java.util.HashSet<String> seen = new java.util.HashSet<String>();
+            if (on && ws != null && (mgr || !obs)) {
+                for (int i = 0; i < ws.length(); i++) {
+                    JSONObject w = ws.getJSONObject(i);
+                    String id = w.optString("id", "");
+                    if (id.length() == 0 || w.optDouble("age", 9999.0) > WK_TTL_S) continue;
+                    WkIt it = new WkIt();
+                    it.id = id;
+                    it.dz = w.optDouble("dz", 99999.0);
+                    it.inside = it.dz <= 0.0;
+                    if (haveMe) {
+                        double wl = w.optDouble("lat", 0.0), wo = w.optDouble("lng", 0.0);
+                        it.dme = wkHav(l.getLatitude(), l.getLongitude(), wl, wo);
+                        it.dir = wkDir(l.getLatitude(), l.getLongitude(), wl, wo);
+                    }
+                    if (mgr && it.dz <= WK_CHEF_D) it.lvl = 1;
+                    if (it.inside) it.lvl = 2;
+                    if (it.dme >= 0 && it.dme <= WK_ME_D) it.lvl = Math.max(it.lvl, 2);
+                    if (it.dme >= 0 && it.dme <= WK_ME_D3) it.lvl = 3;
+                    seen.add(id);
+                    WkEp e = wkEp.get(id);
+                    if (e == null) { e = new WkEp(); wkEp.put(id, e); }
+                    if (it.lvl == 0) { if (e.outAt == 0) e.outAt = now; continue; }
+                    if (e.outAt != 0 && now - e.outAt > WK_REARM_MS) e.max = 0;
+                    e.outAt = 0;
+                    if (it.lvl > e.max) { e.max = it.lvl; fired.add(it); }
+                }
+            }
+            java.util.Iterator<java.util.Map.Entry<String, WkEp>> iter = wkEp.entrySet().iterator();
+            while (iter.hasNext()) {
+                java.util.Map.Entry<String, WkEp> en = iter.next();
+                if (seen.contains(en.getKey())) continue;
+                if (en.getValue().outAt == 0) en.getValue().outAt = now;
+                else if (now - en.getValue().outAt > WK_FORGET_MS) iter.remove();
+            }
+            if (fired.isEmpty() || appVisible) return;
+            WkIt top = fired.get(0);
+            for (WkIt c : fired) {
+                double dc = c.dme < 0 ? 1e9 : c.dme, dt = top.dme < 0 ? 1e9 : top.dme;
+                if (c.lvl > top.lvl || (c.lvl == top.lvl && dc < dt)) top = c;
+            }
+            String ident = " Identifiez avant de tirer et appliquez les consignes du chef.";
+            String title, text;
+            if (top.lvl == 3) {
+                title = "Promeneur très proche !";
+                text = "Un promeneur est signalé à " + wkRound(top.dme) + " de vous, direction " + top.dir + "." + ident;
+            } else if (top.dme >= 0 && top.dme <= WK_ME_D) {
+                title = "Promeneur à proximité";
+                text = "Un promeneur est signalé à " + wkRound(top.dme) + " de vous, direction " + top.dir + "." + ident;
+            } else if (top.inside) {
+                title = "Promeneur dans la zone de battue";
+                text = "Un promeneur équipé de Lisiera est signalé dans la zone." + ident;
+            } else {
+                title = "Promeneur près de la zone";
+                text = "Un promeneur équipé de Lisiera est signalé à " + wkRound(top.dz) + " de la zone. Relayez au talkie si besoin.";
+            }
+            if (fired.size() > 1) text += " + " + (fired.size() - 1) + " autre(s) promeneur(s) signalé(s).";
+            wkNotify(top.lvl, title, text);
+        } catch (Exception e) {
+            // reponse inattendue : pas d'alerte, le partage de position continue
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void wkNotify(int lvl, String title, String text) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            boolean snd = lvl >= 2 && alertSound;
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel a = new NotificationChannel(CH_WK, "Lisiera – promeneur signalé (son)", NotificationManager.IMPORTANCE_HIGH);
+                a.enableVibration(false);
+                nm.createNotificationChannel(a);
+                NotificationChannel q = new NotificationChannel(CH_WK_Q, "Lisiera – promeneur signalé (silencieux)", NotificationManager.IMPORTANCE_HIGH);
+                q.enableVibration(false);
+                q.setSound(null, null);
+                nm.createNotificationChannel(q);
+            }
+            Notification.Builder nb = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, snd ? CH_WK : CH_WK_Q) : new Notification.Builder(this);
+            nb.setContentTitle(title);
+            nb.setContentText(text);
+            nb.setStyle(new Notification.BigTextStyle().bigText(text));
+            nb.setSmallIcon(android.R.drawable.ic_dialog_alert);
+            nb.setAutoCancel(true);
+            if (Build.VERSION.SDK_INT < 26) {
+                nb.setPriority(Notification.PRIORITY_HIGH);
+                if (snd) nb.setDefaults(Notification.DEFAULT_SOUND);
+            }
+            Intent li = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            if (li != null) {
+                nb.setContentIntent(PendingIntent.getActivity(this, 1, li, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+            }
+            nm.notify(ID_WK, nb.build());
+        } catch (Exception e) {
+            // notification refusee : la vibration ci-dessous reste possible
+        }
+        try {
+            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null) return;
+            long[] p = lvl >= 3 ? new long[]{0, 700, 200, 700, 200, 700} : (lvl == 2 ? new long[]{0, 500, 200, 500} : new long[]{0, 300});
+            if (Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(VibrationEffect.createWaveform(p, -1));
+            } else {
+                v.vibrate(p, -1);
+            }
+        } catch (Exception e) {
+            // pas de vibreur ou permission absente
+        }
+    }
+
     private void sendOnce() throws Exception {
         Location l = last;
         if (l == null || url.length() == 0) return;
@@ -235,7 +398,9 @@ public class LisieraTrackerService extends Service {
                 return;
             }
             try {
-                String st = new JSONObject(body).getJSONObject("battue").optString("status");
+                JSONObject jr = new JSONObject(body);
+                String st = jr.getJSONObject("battue").optString("status");
+                handleWalkers(jr);
                 if ("ended".equals(st)) stopSelf();
             } catch (Exception e) {
                 // reponse inattendue : on continue
