@@ -54,6 +54,7 @@ jobs:
         run: |
           npx cap add android
           python3 patch_android.py
+          python3 patch_walker.py
           npx cap sync android
 
       - name: Icône de l'application
