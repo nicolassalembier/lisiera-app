@@ -101,7 +101,14 @@ public class LisieraWalkerService extends Service {
     private long startedAt = 0, lastZonesTry = 0, lastNote = 0, lastRecT = 0;
     private double lastRecLat = 0, lastRecLng = 0;
     private Location lastLoc;
-    private long gpsEvery = 15000L;
+    private static final long ACQ_EVERY = 1000L;
+    private static final long ACQ_MAX_MS = 90000L;
+    private static final long SEED_MAX_AGE_MS = 300000L;
+    private static boolean sCoarse = false;
+    private long gpsEvery = ACQ_EVERY;
+    private boolean acquiring = true;
+    private boolean coarseFix = false;
+
 
     private final LocationListener listener = new LocationListener() {
         @Override public void onLocationChanged(Location l) { onFix(l); }
@@ -145,11 +152,15 @@ public class LisieraWalkerService extends Service {
             synchronized (LOCK) {
                 sStartedAt = now;
                 sTrackN = fresh ? 0 : trackCount(this);
-                sHasFix = false; sNearD = -1; sLevel = 0; sAlertSeq = 0; sAlertLevel = 0;
+                sHasFix = false; sNearD = -1; sLevel = 0; sAlertSeq = 0; sAlertLevel = 0; sCoarse = false;
                 sNetOk = true; sZonesAt = 0; sZrev = ""; sZonesJson = "[]";
             }
             running = true;
             startLocation();
+            seedLastKnown();
+            main.postDelayed(new Runnable() {
+                @Override public void run() { endAcquisition(); }
+            }, ACQ_MAX_MS);
             main.postDelayed(new Runnable() {
                 @Override public void run() { autoStop(); }
             }, MAX_MS);
@@ -256,7 +267,7 @@ public class LisieraWalkerService extends Service {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, gpsEvery, 0f, listener, Looper.getMainLooper());
             listening = true;
             try {
-                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 30000L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, acquiring ? 2000L : 30000L, 0f, listener, Looper.getMainLooper());
             } catch (Exception e) {
                 // pas de localisation reseau : on garde le GPS
             }
@@ -269,6 +280,42 @@ public class LisieraWalkerService extends Service {
         try { if (lm != null) lm.removeUpdates(listener); } catch (Exception e) { }
         listening = false;
         startLocation();
+    }
+
+    @SuppressLint("MissingPermission")
+    private void seedLastKnown() {
+        try {
+            if (lm == null) lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+            long now = System.currentTimeMillis();
+            Location best = null;
+            String[] provs = new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER};
+            for (String prov : provs) {
+                Location c = null;
+                try { c = lm.getLastKnownLocation(prov); } catch (Exception e) { }
+                if (c == null || now - c.getTime() > SEED_MAX_AGE_MS || c.getTime() > now + 60000L) continue;
+                if (best == null || c.getTime() > best.getTime()) best = c;
+            }
+            if (best == null) return;
+            long ageS = Math.max(0L, (now - best.getTime()) / 1000L);
+            float acc = Math.min(999f, (best.hasAccuracy() ? best.getAccuracy() : 200f) + ageS * 1.5f);
+            lastLoc = best;
+            coarseFix = true;
+            synchronized (LOCK) {
+                sHasFix = true; sLat = best.getLatitude(); sLng = best.getLongitude(); sAcc = acc;
+                sTs = best.getTime(); sCoarse = true;
+            }
+            evaluate(best, acc);
+        } catch (Exception e) {
+            // pas de derniere position connue : on attend le premier releve
+        }
+    }
+
+    private void endAcquisition() {
+        if (!acquiring || !running) return;
+        acquiring = false;
+        double nd;
+        synchronized (LOCK) { nd = sNearD; }
+        adapt(nd);
     }
 
     private void refreshGps() {
@@ -288,11 +335,16 @@ public class LisieraWalkerService extends Service {
         boolean gps = LocationManager.GPS_PROVIDER.equals(l.getProvider());
         boolean pGps = p != null && LocationManager.GPS_PROVIDER.equals(p.getProvider());
         if (!gps && pGps && now - p.getTime() < 20000L) return;
+        
         lastLoc = l;
         float acc = l.hasAccuracy() ? l.getAccuracy() : 999f;
+        coarseFix = !gps && acc > 200f;
+        if (acquiring && gps && acc <= 50f) acquiring = false;
+
         synchronized (LOCK) {
             sHasFix = true; sLat = l.getLatitude(); sLng = l.getLongitude(); sAcc = acc;
             sTs = Math.abs(now - l.getTime()) < 3600000L ? l.getTime() : now;
+            sCoarse = coarseFix;
         }
         refreshGps();
         evaluate(l, acc);
@@ -315,7 +367,9 @@ public class LisieraWalkerService extends Service {
             int lvl = d <= 0.0 ? 2 : (d <= alertM ? 1 : 0);
             Integer last = levels.get(z.id);
             int lv = last == null ? 0 : last.intValue();
-            if (lvl > lv) {
+            if (coarseFix) {
+                // position provisoire : distance affichee, mais ni alerte ni changement d'etat
+            } else if (lvl > lv) {
                 levels.put(z.id, Integer.valueOf(lvl));
                 if (lvl > alertLevel) { alertLevel = lvl; alertD = d; }
             } else if (d > alertM + RESET_M) {
@@ -339,7 +393,8 @@ public class LisieraWalkerService extends Service {
     }
 
     private void adapt(double nearD) {
-        long want = gpsEvery;
+        if (acquiring) return;
+        long want = gpsEvery == ACQ_EVERY ? 15000L : gpsEvery;
         if (nearD < 0 || nearD > FAR_M) want = 15000L;
         else if (nearD < NEAR_M) want = 4000L;
         if (want != gpsEvery) { gpsEvery = want; restartLocation(); }
@@ -553,6 +608,7 @@ public class LisieraWalkerService extends Service {
                     f.put("lng", sLng);
                     f.put("acc", (double) sAcc);
                     f.put("ts", sTs);
+                    f.put("prov", sCoarse);
                     o.put("fix", f);
                 }
                 if (sNearD >= 0) {
