@@ -72,6 +72,8 @@ public class LisieraWalkerPlugin extends Plugin {
         i.putExtra("record", rec == null || rec.booleanValue());
         Boolean fresh = call.getBoolean("fresh", true);
         i.putExtra("fresh", fresh == null || fresh.booleanValue());
+        Boolean shr = call.getBoolean("share", false);
+        i.putExtra("share", shr != null && shr.booleanValue());
         try {
             if (Build.VERSION.SDK_INT >= 26) {
                 getContext().startForegroundService(i);
@@ -96,9 +98,13 @@ public class LisieraWalkerPlugin extends Plugin {
 
     @PluginMethod
     public void walkConfig(PluginCall call) {
-        Integer am = call.getInt("alertM", 200);
-        LisieraWalkerService.alertM = Math.max(50, Math.min(2000, am == null ? 200 : am.intValue()));
-        LisieraWalkerService.levelsReset = true;
+        Integer am = call.getInt("alertM", null);
+        if (am != null) {
+            LisieraWalkerService.alertM = Math.max(50, Math.min(2000, am.intValue()));
+            LisieraWalkerService.levelsReset = true;
+        }
+        Boolean sh = call.getBoolean("share", null);
+        if (sh != null) LisieraWalkerService.setShare(sh.booleanValue());
         call.resolve();
     }
 
