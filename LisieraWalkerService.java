@@ -38,6 +38,8 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.security.SecureRandom;
+
 
 /**
  * Mode promeneur : service de premier plan (type location) lance depuis l'ecran.
@@ -108,6 +110,18 @@ public class LisieraWalkerService extends Service {
     private long gpsEvery = ACQ_EVERY;
     private boolean acquiring = true;
     private boolean coarseFix = false;
+    private static volatile LisieraWalkerService inst;
+    static volatile boolean shareOn = false;
+    private static boolean sShareNear = false, sShareErr = false;
+    private static final double SHARE_SEND_M = 300.0, SHARE_LEAVE_M = 450.0;
+    private static final long SHARE_EVERY = 8000L, SHARE_MAX_AGE = 30000L;
+    private static final float SHARE_MAX_ACC = 100f;
+    private final String wid = newWid();
+    private final AtomicBoolean sharing = new AtomicBoolean(false);
+    private ExecutorService ioS;
+    private volatile boolean shareSent = false;
+    private volatile int shareGen = 0;
+    private long lastShare = 0;
 
 
     private final LocationListener listener = new LocationListener() {
@@ -123,6 +137,8 @@ public class LisieraWalkerService extends Service {
         nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         main = new Handler(Looper.getMainLooper());
         io = Executors.newSingleThreadExecutor();
+        ioS = Executors.newSingleThreadExecutor();
+        inst = this;
     }
 
     @Override
@@ -136,6 +152,7 @@ public class LisieraWalkerService extends Service {
             if (u != null && u.length() > 0) zonesUrl = u;
             if (in.hasExtra("alertM")) alertM = Math.max(50, Math.min(2000, in.getIntExtra("alertM", 200)));
             recording = in.getBooleanExtra("record", true);
+            if (in.hasExtra("share")) shareOn = in.getBooleanExtra("share", false);
         }
         long now = System.currentTimeMillis();
         try {
@@ -153,7 +170,7 @@ public class LisieraWalkerService extends Service {
                 sStartedAt = now;
                 sTrackN = fresh ? 0 : trackCount(this);
                 sHasFix = false; sNearD = -1; sLevel = 0; sAlertSeq = 0; sAlertLevel = 0; sCoarse = false;
-                sNetOk = true; sZonesAt = 0; sZrev = ""; sZonesJson = "[]";
+                sNetOk = true; sZonesAt = 0; sZrev = ""; sZonesJson = "[]"; sShareNear = false; sShareErr = false;
             }
             running = true;
             startLocation();
@@ -360,8 +377,10 @@ public class LisieraWalkerService extends Service {
         double bestD = -1, bestLat = lat, bestLng = lng;
         int maxLevel = 0, alertLevel = 0;
         double alertD = 0;
+        double rawMin = Double.MAX_VALUE;
         for (Zone z : zs) {
             double[] r = nearest(lat, lng, z.poly);
+            if (r[0] < rawMin) rawMin = r[0];
             double d = Math.max(0.0, r[0] - slack);
             if (bestD < 0 || d < bestD) { bestD = d; bestLat = r[1]; bestLng = r[2]; }
             int lvl = d <= 0.0 ? 2 : (d <= alertM ? 1 : 0);
@@ -378,6 +397,7 @@ public class LisieraWalkerService extends Service {
             if (lvl > maxLevel) maxLevel = lvl;
         }
         synchronized (LOCK) { sNearD = bestD; sNearLat = bestLat; sNearLng = bestLng; sLevel = maxLevel; }
+        maybeShare(l, acc, rawMin);
         if (alertLevel > 0) raiseAlert(alertLevel, alertD);
         adapt(bestD);
         long now = System.currentTimeMillis();
@@ -388,6 +408,7 @@ public class LisieraWalkerService extends Service {
             else if (bestD > 5000.0) t = "Aucune battue déclarée à moins de 5 km.";
             else if (bestD <= 0.0) t = "Vous êtes dans une zone de battue déclarée.";
             else t = "Battue déclarée la plus proche : " + fmtDist(bestD);
+            if (shareOn && shareSent) t += " Présence signalée aux chasseurs (anonyme).";
             try { nm.notify(ID_RUN, runningNotification(t)); } catch (Exception e) { }
         }
     }
@@ -434,6 +455,136 @@ public class LisieraWalkerService extends Service {
                 } finally {
                     fetching.set(false);
                 }
+            }
+        });
+    }
+    
+    /* ---------- signalement de la presence aux chasseurs (facultatif, anonyme) ---------- */
+
+    private static String newWid() {
+        byte[] b = new byte[8];
+        new SecureRandom().nextBytes(b);
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < b.length; i++) s.append(String.format(Locale.US, "%02x", b[i] & 0xff));
+        return s.toString();
+    }
+
+    private String pingUrl() {
+        String u = zonesUrl;
+        return u.indexOf("a=walker_zones") >= 0 ? u.replace("a=walker_zones", "a=walker_ping") : "";
+    }
+
+    private String leaveUrl() {
+        String u = zonesUrl;
+        return u.indexOf("a=walker_zones") >= 0 ? u.replace("a=walker_zones", "a=walker_leave") : "";
+    }
+
+    private static int postJson(String url, JSONObject body) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json");
+            OutputStream os = c.getOutputStream();
+            os.write(body.toString().getBytes("UTF-8"));
+            os.close();
+            int st = c.getResponseCode();
+            try { readAll(st >= 400 ? c.getErrorStream() : c.getInputStream()); } catch (Exception e) { }
+            return st;
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private static void sendLeaveNow(String url, String id) {
+        try {
+            JSONObject p = new JSONObject();
+            p.put("wid", id);
+            postJson(url, p);
+        } catch (Throwable t) {
+            // la position expire toute seule cote serveur au bout de 5 minutes
+        }
+    }
+
+    private void maybeShare(Location l, float acc, double rawMin) {
+        if (!shareOn || !running || l == null) return;
+        long now = System.currentTimeMillis();
+        long t = Math.abs(now - l.getTime()) < 3600000L ? l.getTime() : now;
+        long ageMs = Math.max(0L, now - t);
+        if (coarseFix || acc > SHARE_MAX_ACC || ageMs > SHARE_MAX_AGE) return;
+        String pu = pingUrl();
+        if (pu.length() == 0) return;
+        if (rawMin <= SHARE_SEND_M) {
+            if (now - lastShare < SHARE_EVERY) return;
+            lastShare = now;
+            sendPing(pu, l.getLatitude(), l.getLongitude(), Math.round(acc), ageMs);
+        } else if (rawMin > SHARE_LEAVE_M) {
+            sendLeave();
+        }
+    }
+
+    private void sendPing(final String url, final double lat, final double lng, final long acc, final long ageMs) {
+        if (!sharing.compareAndSet(false, true)) return;
+        final int gen = shareGen;
+        try {
+            ioS.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        JSONObject p = new JSONObject();
+                        p.put("wid", wid);
+                        p.put("lat", lat);
+                        p.put("lng", lng);
+                        p.put("acc", acc);
+                        p.put("age_ms", ageMs);
+                        int st = postJson(url, p);
+                        synchronized (LOCK) {
+                            if (st == 200) {
+                                if (gen == shareGen) { shareSent = true; sShareNear = true; }
+                                sShareErr = false;
+                            } else {
+                                sShareErr = true;
+                            }
+                        }
+                    } catch (Throwable t) {
+                        synchronized (LOCK) { sShareErr = true; }
+                    } finally {
+                        sharing.set(false);
+                    }
+                }
+            });
+        } catch (Exception e) {
+            sharing.set(false);
+        }
+    }
+
+    private void sendLeave() {
+        synchronized (LOCK) { sShareNear = false; }
+        boolean inflight = sharing.get();
+        shareGen++;
+        if (!shareSent && !inflight) return;
+        shareSent = false;
+        final String lu = leaveUrl();
+        if (lu.length() == 0) return;
+        try {
+            ioS.execute(new Runnable() {
+                @Override public void run() { sendLeaveNow(lu, wid); }
+            });
+        } catch (Exception e) {
+            // service en cours d'arret
+        }
+    }
+
+    static void setShare(boolean on) {
+        shareOn = on;
+        final LisieraWalkerService s = inst;
+        if (s == null) return;
+        if (!on) { s.sendLeave(); return; }
+        s.main.post(new Runnable() {
+            @Override public void run() {
+                Location l = s.lastLoc;
+                if (l != null && running) s.evaluate(l, l.hasAccuracy() ? l.getAccuracy() : 999f);
             }
         });
     }
@@ -513,6 +664,18 @@ public class LisieraWalkerService extends Service {
         try { if (lm != null) lm.removeUpdates(listener); } catch (Exception e) { }
         listening = false;
         try { if (main != null) main.removeCallbacksAndMessages(null); } catch (Exception e) { }
+        try {
+            if (shareSent && ioS != null) {
+                shareSent = false;
+                final String lu = leaveUrl();
+                if (lu.length() > 0) ioS.execute(new Runnable() {
+                    @Override public void run() { sendLeaveNow(lu, wid); }
+                });
+            }
+        } catch (Exception e) { }
+        try { if (ioS != null) ioS.shutdown(); } catch (Exception e) { }
+        shareOn = false;
+        inst = null;
         try { if (io != null) io.shutdownNow(); } catch (Exception e) { }
         try { stopForeground(true); } catch (Exception e) { }
         super.onDestroy();
@@ -626,6 +789,10 @@ public class LisieraWalkerService extends Service {
                 o.put("alertLevel", sAlertLevel);
                 o.put("startedAt", sStartedAt);
                 o.put("gps", sGpsOn);
+                o.put("share", shareOn);
+                o.put("shareNear", sShareNear);
+                o.put("shareErr", sShareErr);
+
                 o.put("trackN", running ? sTrackN : trackCount(ctx));
             }
         } catch (Exception e) { }
