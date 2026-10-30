@@ -20,27 +20,20 @@ jobs:
         run: |
           SDKM=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)
           yes | "$SDKM" --licenses > /dev/null || true
-      - name: Clé de signature (secret)
+      - name: Clé d'importation
         env:
-          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          PASS: ${{ secrets.UPLOAD_KS_PASSWORD }}
         run: |
-          test -n "$KS_B64" || { echo "Secret ANDROID_KEYSTORE_B64 manquant"; exit 1; }
-          mkdir -p ~/.android ~/.config/.android
-          echo "$KS_B64" | base64 -d > ~/.android/debug.keystore
-          cp ~/.android/debug.keystore ~/.config/.android/debug.keystore
-          chmod 600 ~/.android/debug.keystore ~/.config/.android/debug.keystore
-      - name: Contrôle de la clé d'importation
-        run: |
-          keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey > key.txt || { echo "::error::Alias androiddebugkey ou mot de passe android incorrect : la clé ne correspond pas à ce que le build attend"; exit 1; }
+          test -f upload.jks || { echo "::error::upload.jks absent : lancez d'abord le workflow Créer la clé d'importation Play"; exit 1; }
+          test -n "$PASS" || { echo "::error::Secret UPLOAD_KS_PASSWORD manquant"; exit 1; }
+          keytool -list -v -keystore upload.jks -storetype PKCS12 -storepass "$PASS" -alias upload > key.txt || { echo "::error::Mot de passe ou alias incorrect pour upload.jks"; exit 1; }
+          if grep -q "CN=Android Debug" key.txt; then echo "::error::Certificat de debug : interdit pour la Play Console"; exit 1; fi
           {
             echo "### Clé d'importation"
             echo '```'
             grep -E "Owner:|Signature algorithm name|Subject Public Key Algorithm|Valid from|SHA256:" key.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          if grep -q "CN=Android Debug" key.txt; then
-            echo "::warning::Certificat nommé Android Debug : la Play Console risque de refuser l'AAB. Voir le résumé du job."
-          fi
       - name: Projet Capacitor 8
         run: |
           npm init -y
@@ -75,6 +68,9 @@ jobs:
           node make_icons.js
       - name: Compiler l'AAB et l'APK de test
         working-directory: android
+        env:
+          UPLOAD_KS_FILE: ${{ github.workspace }}/upload.jks
+          UPLOAD_KS_PASS: ${{ secrets.UPLOAD_KS_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew bundleRelease assembleRelease --no-daemon
@@ -82,6 +78,9 @@ jobs:
         run: |
           AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           "$AAPT2" dump badging android/app/build/outputs/apk/release/app-release.apk > badging.txt
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/release/app-release.apk > certs.txt
+          if grep -q "CN=Android Debug" certs.txt; then echo "::error::L'APK est signé avec la clé de debug"; exit 1; fi
           {
             echo "### Contrôle du build Play"
             echo '```'
@@ -91,12 +90,11 @@ jobs:
             echo '```'
             grep -E "^uses-permission" badging.txt || true
             echo '```'
+            echo "#### Signature"
+            echo '```'
+            grep -E "certificate DN|certificate SHA-256" certs.txt | head -2
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
-          RAW=$("$APKSIGNER" verify --print-certs android/app/build/outputs/apk/release/app-release.apk | grep 'certificate SHA-256 digest' | head -1 | sed 's/.*: *//')
-          FP=$(echo "$RAW" | tr 'a-f' 'A-F' | sed 's/../&:/g; s/:$//')
-          echo "### Empreinte SHA-256 de la clé d'importation" >> "$GITHUB_STEP_SUMMARY"
-          echo "$FP" >> "$GITHUB_STEP_SUMMARY"
       - name: Publier l'AAB et l'APK de test
         env:
           GH_TOKEN: ${{ github.token }}
