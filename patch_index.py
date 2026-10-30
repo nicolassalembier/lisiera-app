@@ -124,7 +124,7 @@ rep("ex.href = API + '?a=export&code=' + encodeURIComponent(S.code) + '&token=' 
     "if (nativeBG) { ex.onclick = ev => { ev.preventDefault(); prompt('Copiez ce lien, puis ouvrez-le dans Chrome :', ex.href); }; }")
 rep('function restartTimers() {', 'function restartTimers() {\nif (nativeBG && recOn) trackerStart();')
 import os
-rep("const APP_BUILD = '';", "const APP_BUILD = '" + os.environ.get('GITHUB_RUN_NUMBER', '?') + "';")
+rep("const APP_BUILD = '';", "const APP_BUILD = '" + os.environ.get('GITHUB_RUN_NUMBER', '?') + "'; const APP_CHANNEL = '" + os.environ.get('LISIERA_CHANNEL', 'apk') + "';")
 open(path, 'w', encoding='utf-8').write(s)
 
 
