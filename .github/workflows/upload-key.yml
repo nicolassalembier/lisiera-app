@@ -1,0 +1,36 @@
+name: Créer la clé d'importation Play
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  key:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Créer la clé et l'enregistrer dans le dépôt
+        env:
+          PASS: ${{ secrets.UPLOAD_KS_PASSWORD }}
+        run: |
+          test -n "$PASS" || { echo "::error::Secret UPLOAD_KS_PASSWORD manquant"; exit 1; }
+          test ${#PASS} -ge 20 || { echo "::error::Le mot de passe doit faire au moins 20 caractères"; exit 1; }
+          test ! -f upload.jks || { echo "::error::upload.jks existe déjà : ne pas le recréer, sinon la clé change"; exit 1; }
+          keytool -genkeypair -storetype PKCS12 -keystore upload.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Lisiera, O=Lisiera, C=FR" -storepass "$PASS" -keypass "$PASS"
+          keytool -list -v -keystore upload.jks -storetype PKCS12 -storepass "$PASS" -alias upload > key.txt
+          {
+            echo "### Clé d'importation créée"
+            echo '```'
+            grep -E "Owner:|Signature algorithm name|Subject Public Key Algorithm|Valid from|SHA256:" key.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          rm key.txt
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add upload.jks
+          git commit -m "Clé d'importation Play (protégée par mot de passe)"
+          git push
