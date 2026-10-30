@@ -14,10 +14,11 @@ if 'signingConfigs.release' not in s:
     SIGN = (
         '    signingConfigs {\n'
         '        release {\n'
-        "            storeFile file(System.getProperty('user.home') + '/.android/debug.keystore')\n"
-        "            storePassword 'android'\n"
-        "            keyAlias 'androiddebugkey'\n"
-        "            keyPassword 'android'\n"
+        "            storeFile file(System.getenv('UPLOAD_KS_FILE') ?: 'upload.jks')\n"
+        "            storeType 'pkcs12'\n"
+        "            storePassword System.getenv('UPLOAD_KS_PASS')\n"
+        "            keyAlias 'upload'\n"
+        "            keyPassword System.getenv('UPLOAD_KS_PASS')\n"
         '        }\n'
         '    }\n'
     )
