@@ -31,7 +31,7 @@ jobs:
       - name: Projet Capacitor 8 iOS
         run: |
           npm init -y
-          npm install --no-audit --no-fund --legacy-peer-deps @capacitor/core@8 @capacitor/ios@8 @capacitor/share@8 @capacitor/app@8 "@capacitor-community/background-geolocation@^1.3.1"
+          npm install --no-audit --no-fund --legacy-peer-deps @capacitor/core@8 @capacitor/ios@8 @capacitor/share@8 @capacitor/app@8 @capacitor/local-notifications@8 "@capacitor-community/background-geolocation@^1.3.1"
           npm install --no-audit --no-fund --legacy-peer-deps -D @capacitor/cli@8
           cat > capacitor.config.json <<'EOF2'
           {
@@ -50,8 +50,10 @@ jobs:
           python3 patch_ios.py web www/index.html
       - name: Projet iOS
         run: |
-          npx cap add ios
+          npx cap add ios --packagemanager SPM
           python3 patch_ios.py native
+          npm install --no-save --no-audit --no-fund --legacy-peer-deps sharp
+          node make_icons_ios.js || echo "::warning::Icône iOS non générée : icône par défaut conservée"
           npx cap sync ios
           ls ios/App
       - name: Clé App Store Connect
@@ -130,4 +132,3 @@ jobs:
       - name: Effacer la clé
         if: always()
         run: rm -rf "$RUNNER_TEMP/asc"
-
