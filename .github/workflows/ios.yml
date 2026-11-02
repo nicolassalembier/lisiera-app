@@ -87,6 +87,7 @@ jobs:
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             PRODUCT_BUNDLE_IDENTIFIER=fr.lisiera.app \
+            TARGETED_DEVICE_FAMILY=1 \
             MARKETING_VERSION=1.0 \
             CURRENT_PROJECT_VERSION=${{ github.run_number }}
       - name: Export signé (App Store)
