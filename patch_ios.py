@@ -69,6 +69,8 @@ elif mode == 'native':
     with open(p, 'rb') as f:
         d = plistlib.load(f)
     d['CFBundleDisplayName'] = 'Lisiera'
+    d['CFBundleDevelopmentRegion'] = 'fr'
+    d['CFBundleLocalizations'] = ['fr']
     d['NSLocationWhenInUseUsageDescription'] = (
         'Lisiera utilise votre position pour vous situer sur la carte et, en battue, '
         'la partager avec les participants de cette battue.')
