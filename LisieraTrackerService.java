@@ -429,7 +429,15 @@ public class LisieraTrackerService extends Service {
                 body = bos.toString("UTF-8");
             }
             if (status == 403 || status == 404) {
-                stopSelf();
+                boolean fromApi = false;
+                try {
+                    fromApi = new JSONObject(body).has("error");
+                } catch (Exception e) {
+                    fromApi = false;
+                }
+                if (fromApi) {
+                    stopSelf();
+                }
                 return;
             }
             try {
