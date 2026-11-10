@@ -57,6 +57,15 @@ public class LisieraTrackerService extends Service {
     private volatile String token = "";
     private volatile int interval = 15;
     private volatile long lastSentAt = 0;
+    private static final int STILL_INTERVAL = 15;
+    private static final long STILL_AFTER_MS = 60000L;
+    private static final long FAST_HOLD_MS = 90000L;
+    private static final double STILL_RADIUS_M = 12.0;
+    private volatile long stillSince = 0;
+    private volatile long fastUntil = 0;
+    private volatile boolean amObserver = false;
+    private double anchorLat = 0, anchorLng = 0;
+    private boolean hasAnchor = false;
     private final AtomicBoolean busy = new AtomicBoolean(false);
     private ExecutorService io;
     private ScheduledExecutorService sched;
@@ -84,6 +93,7 @@ public class LisieraTrackerService extends Service {
             long now = System.currentTimeMillis();
             if (p == null || gps || !pGps || now - p.getTime() > 20000) {
                 last = l;
+                trackStill(l, now);
             }
             maybeSend();
         }
@@ -191,9 +201,34 @@ public class LisieraTrackerService extends Service {
         }
     }
 
+    private void trackStill(Location l, long now) {
+        float acc = l.hasAccuracy() ? l.getAccuracy() : 999f;
+        boolean moving = l.hasSpeed() && l.getSpeed() > 1.0f;
+        double lim = Math.max(STILL_RADIUS_M, Math.min((double) acc, 60.0));
+        if (!hasAnchor || moving || wkHav(anchorLat, anchorLng, l.getLatitude(), l.getLongitude()) > lim) {
+            anchorLat = l.getLatitude();
+            anchorLng = l.getLongitude();
+            hasAnchor = true;
+            stillSince = now;
+        }
+    }
+    private void adaptFromResponse(JSONObject j, long now) {
+        JSONObject me = j.optJSONObject("me");
+        if (me != null) amObserver = "observateur".equals(me.optString("role", "poste"));
+        JSONArray ws = j.optJSONArray("walkers");
+        if (ws != null && ws.length() > 0) fastUntil = now + FAST_HOLD_MS;
+    }
+    private int effectiveInterval(long now) {
+        int base = interval;
+        if (appVisible) return Math.max(base * 3, STILL_INTERVAL);
+        if (now < fastUntil || base >= STILL_INTERVAL) return base;
+        if (amObserver) return STILL_INTERVAL;
+        long s = stillSince;
+        return (s > 0 && now - s >= STILL_AFTER_MS) ? STILL_INTERVAL : base;
+    }
     private void maybeSend() {
         long now = System.currentTimeMillis();
-        if (now - lastSentAt < interval * 1000L - 500L) return;
+        if (now - lastSentAt < effectiveInterval(now) * 1000L - 500L) return;
         if (!busy.compareAndSet(false, true)) return;
         lastSentAt = now;
         io.execute(new Runnable() {
@@ -400,6 +435,7 @@ public class LisieraTrackerService extends Service {
             try {
                 JSONObject jr = new JSONObject(body);
                 String st = jr.getJSONObject("battue").optString("status");
+                adaptFromResponse(jr, System.currentTimeMillis());
                 handleWalkers(jr);
                 if ("ended".equals(st)) stopSelf();
             } catch (Exception e) {
