@@ -42,6 +42,7 @@ MAIN = ('package fr.lisiera.app;\n\n'
         'public class MainActivity extends BridgeActivity {\n'
         '    @Override\n'
         '    public void onCreate(Bundle savedInstanceState) {\n'
+        '        registerPlugin(LisieraGuidePlugin.class);\n'
         '        registerPlugin(LisieraTrackerPlugin.class);\n'
         '        super.onCreate(savedInstanceState);\n'
         '    }\n'
@@ -52,6 +53,9 @@ if 'android.permission.CAMERA' not in s:
 if 'android.permission.WAKE_LOCK' not in s:
     k = s.find('<application')
     s = s[:k] + '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n' + s[k:]
+if 'TTS_SERVICE' not in s:
+    k = s.find('<application')
+    s = s[:k] + '    <queries>\n        <intent>\n            <action android:name="android.intent.action.TTS_SERVICE" />\n        </intent>\n    </queries>\n' + s[k:]
 if 'LisieraTrackerService' not in s:
     k = s.find('</application>')
     if k < 0:
@@ -61,7 +65,7 @@ open(p, 'w', encoding='utf-8').write(s)
 import os, shutil
 d = 'android/app/src/main/java/fr/lisiera/app'
 os.makedirs(d, exist_ok=True)
-for f in ('LisieraTrackerPlugin.java', 'LisieraTrackerService.java'):
+for f in ('LisieraTrackerPlugin.java', 'LisieraTrackerService.java', 'GuideEngine.java', 'GuideVoice.java', 'LisieraGuidePlugin.java'):
     shutil.copy(f, os.path.join(d, f))
 open(os.path.join(d, 'MainActivity.java'), 'w', encoding='utf-8').write(MAIN)
 
