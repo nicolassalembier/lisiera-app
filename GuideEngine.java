@@ -154,6 +154,11 @@ public final class GuideEngine {
                 if (pr != null && pr.d <= JOIN) { int j = G.add(pr.pt, true); put(ins, p.key, pr.i, pr.t, j); conn.add(new int[]{j, vid.get(c.key)[0]}); }
             }
             Chem e = c.end.length() > 0 ? by.get(c.end) : null;
+            if (e != null && e == c && c.geom.length >= 3) {
+                int[] ids0 = vid.get(c.key);
+                int last0 = c.geom.length - 1;
+                if (dist(c.geom[last0], c.geom[0]) <= JOIN) conn.add(new int[]{ids0[last0], ids0[0]});
+            }
             if (e != null && e != c) {
                 int last = c.geom.length - 1;
                 Proj pr = proj(e.geom, c.geom[last]);
