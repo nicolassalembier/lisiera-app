@@ -15,7 +15,10 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.BatteryManager;
 import android.os.Build;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -153,6 +156,7 @@ public class LisieraTrackerService extends Service {
                     try {
                         startLocation();
                         maybeSend();
+                        guideTick();
                     } catch (Throwable t) {
                         // ignore
                     }
@@ -168,8 +172,8 @@ public class LisieraTrackerService extends Service {
             nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Lisiera – partage de position", NotificationManager.IMPORTANCE_LOW));
         }
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        b.setContentTitle("Lisiera – position partagée");
-        b.setContentText("Votre position est envoyée à la battue.");
+        b.setContentTitle(notifTitle);
+        b.setContentText(notifText);
         b.setSmallIcon(android.R.drawable.ic_menu_mylocation);
         b.setOngoing(true);
         Intent li = getPackageManager().getLaunchIntentForPackage(getPackageName());
@@ -385,6 +389,173 @@ public class LisieraTrackerService extends Service {
             }
         } catch (Exception e) {
             // pas de vibreur ou permission absente
+        }
+    }
+
+        /* ---------- guidage vers le poste, ecran eteint (meme moteur que la page, voir GuideEngine) ---------- */
+    static volatile boolean guideOn = false;
+    static volatile String guideSound = "all";
+    private static volatile String guideData = null;
+    private static volatile int guideGen = 0;
+    private volatile String notifTitle = "Lisiera – position partagée";
+    private volatile String notifText = "Votre position est envoyée à la battue.";
+    private int gSeen = -1;
+    private GuideEngine.Graph gGraph = null;
+    private final GuideEngine.State gState = new GuideEngine.State();
+    private int gPostN = 0;
+    private double[] gPostPos = null;
+    private boolean gWasOn = false;
+    private long gNotifAt = 0;
+    private String gNotifTxt = "";
+
+    /** appele par LisieraGuidePlugin : data = JSON {post:{n,pos}, chems:[{key,parent,posts,geom}]}, null = inchange */
+    static void setGuide(boolean on, String sound, String data) {
+        guideOn = on;
+        if (sound != null) guideSound = sound;
+        if (data != null) { guideData = data; guideGen++; }
+    }
+
+    private void guideLoad() {
+        String d = guideData;
+        int gen = guideGen;
+        if (d == null) return;
+        try {
+            JSONObject o = new JSONObject(d);
+            JSONObject po = o.getJSONObject("post");
+            int n = po.getInt("n");
+            JSONArray pp = po.getJSONArray("pos");
+            double[] pos = new double[]{pp.getDouble(0), pp.getDouble(1)};
+            List<GuideEngine.Chem> list = new ArrayList<GuideEngine.Chem>();
+            JSONArray ca = o.optJSONArray("chems");
+            if (ca != null) {
+                for (int i = 0; i < ca.length(); i++) {
+                    JSONObject co = ca.getJSONObject(i);
+                    JSONArray g = co.getJSONArray("geom");
+                    GuideEngine.Chem c = new GuideEngine.Chem();
+                    c.key = co.optString("key", "");
+                    c.parent = co.optString("parent", "");
+                    if (c.key.length() == 0 || g.length() < 2) continue;
+                    c.geom = new double[g.length()][2];
+                    for (int k = 0; k < g.length(); k++) {
+                        JSONArray q = g.getJSONArray(k);
+                        c.geom[k][0] = q.getDouble(0);
+                        c.geom[k][1] = q.getDouble(1);
+                    }
+                    JSONArray ps = co.optJSONArray("posts");
+                    c.posts = new int[ps == null ? 0 : ps.length()];
+                    for (int k = 0; k < c.posts.length; k++) c.posts[k] = ps.getInt(k);
+                    list.add(c);
+                }
+            }
+            if (n != gPostN) gState.resetAll(); else gState.resetRoute();
+            gPostN = n;
+            gPostPos = pos;
+            gGraph = list.isEmpty() ? null : GuideEngine.build(list);
+        } catch (Exception e) {
+            gGraph = null;
+            gPostPos = null;
+        }
+        gSeen = gen;
+    }
+
+    private void guideTick() {
+        long now = System.currentTimeMillis();
+        if (!guideOn) {
+            if (gWasOn) { gWasOn = false; gState.resetAll(); gSeen = -1; guideSetNotif(null, null, now); }
+            return;
+        }
+        if (!gWasOn) { gWasOn = true; gState.resetAll(); gSeen = -1; }
+        if (gSeen != guideGen) guideLoad();
+        Location l = last;
+        if (gPostPos == null || l == null || now - l.getTime() > 30000L) return;
+        GuideEngine.Out o = GuideEngine.step(gState, gGraph, gPostN, gPostPos, l.getLatitude(), l.getLongitude(),
+                l.hasAccuracy() ? l.getAccuracy() : 0.0, l.getTime(),
+                l.hasSpeed() ? l.getSpeed() : Double.NaN, l.hasBearing() ? l.getBearing() : Double.NaN, now);
+        if (appVisible) return; // la page affiche et parle : ici on garde seulement l'etat a jour
+        for (GuideEngine.Ev e : o.events) guideEmit(e);
+        guideNotif(o, now);
+    }
+
+    private void guideEmit(GuideEngine.Ev e) {
+        if (e.vib != null && e.vib.length > 0) guideVibrate(e.vib);
+        String m = guideSound;
+        if ("off".equals(m)) return;
+        if (e.crit && e.beep != null) guideBeep(e.beep);
+        if ("all".equals(m) || ("alerts".equals(m) && e.crit)) GuideVoice.speak(this, e.say);
+    }
+
+    private void guideVibrate(long[] on) {
+        try {
+            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null) return;
+            long[] p = new long[on.length + 1];
+            for (int i = 0; i < on.length; i++) p[i + 1] = on[i];
+            if (Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(VibrationEffect.createWaveform(p, -1));
+            } else {
+                v.vibrate(p, -1);
+            }
+        } catch (Exception e) {
+            // pas de vibreur
+        }
+    }
+
+    private void guideBeep(String kind) {
+        try {
+            final int n = "arrive".equals(kind) ? 2 : Integer.parseInt(kind);
+            final ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90);
+            Handler h = new Handler(Looper.getMainLooper());
+            for (int i = 0; i < n; i++) {
+                h.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try { tg.startTone(ToneGenerator.TONE_PROP_BEEP, 180); } catch (Exception e) { }
+                    }
+                }, i * 350L);
+            }
+            h.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try { tg.release(); } catch (Exception e) { }
+                }
+            }, n * 350L + 500L);
+        } catch (Exception e) {
+            // pas de signal sonore
+        }
+    }
+
+    private static String guideDist(double m) {
+        double v = Math.max(5.0, Math.round(m / 5.0) * 5.0);
+        return v < 1000.0 ? Math.round(v) + " m" : String.format(Locale.FRANCE, "%.1f km", v / 1000.0);
+    }
+
+    /** texte de la notification permanente, rafraichi au plus toutes les 4 s */
+    private void guideNotif(GuideEngine.Out o, long now) {
+        String t;
+        if ("arrived".equals(o.mode)) t = "Poste " + gPostN + " atteint";
+        else if ("off".equals(o.mode)) t = "Hors chemin : rejoignez-le (" + guideDist(o.offDist) + ")";
+        else if ("uturn".equals(o.mode)) t = "Faites demi-tour";
+        else if ("direct".equals(o.mode)) t = "Poste " + gPostN + " : " + guideDist(o.rem) + " direction " + WK_DIRS[(int) (Math.round(o.bearing / 45.0) % 8)];
+        else if (o.hasNext && o.nextDist <= 150.0) {
+            String l = GuideEngine.lbl(o.nextDir);
+            t = Character.toUpperCase(l.charAt(0)) + l.substring(1) + " dans " + guideDist(o.nextDist);
+        } else t = "Continuez tout droit";
+        if (!Double.isNaN(o.rem) && !"arrived".equals(o.mode)) t += " · reste " + guideDist(o.rem) + " · ≈ " + Math.max(1, Math.round(o.rem / o.v / 60.0)) + " min";
+        guideSetNotif("Lisiera – guidage vers le poste " + gPostN, t, now);
+    }
+
+    private void guideSetNotif(String title, String text, long now) {
+        String tt = title == null ? "Lisiera – position partagée" : title;
+        String tx = text == null ? "Votre position est envoyée à la battue." : text;
+        if (tx.equals(gNotifTxt) || (title != null && now - gNotifAt < 4000L)) return;
+        gNotifTxt = tx;
+        gNotifAt = now;
+        notifTitle = tt;
+        notifText = tx;
+        try {
+            startForegroundNow();
+        } catch (Exception e) {
+            // la notification garde son ancien texte
         }
     }
 
