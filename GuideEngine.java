@@ -1,6 +1,7 @@
 package fr.lisiera.app;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -9,7 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Moteur de guidage vers le poste (port exact de V1.58 de app.html).
+ * Moteur de guidage vers le poste (port exact de V1.58 et V1.62 de app.html).
  * Aucune dependance Android. Coordonnees : double[]{lat, lng}.
  */
 public final class GuideEngine {
@@ -21,14 +22,18 @@ public final class GuideEngine {
             ACC_POOR = 35, LOOK = 25;
 
     public static final class Chem {
-        public String key = "", parent = "";
+        public String key = "", parent = "", end = "";
         public double[][] geom = new double[0][];
         public int[] posts = new int[0];
+        public double[][] closed = new double[0][];
     }
 
     static final class Edge { final int to; final double w; Edge(int to, double w) { this.to = to; this.w = w; } }
-    static final class Line { String key; int[] seq; int[] posts; }
-    static final class Ins { final int i; final double t; final int j; Ins(int i, double t, int j) { this.i = i; this.t = t; this.j = j; } }
+    static final class Line { String key; int[] seq; int[] posts; boolean[] closed; }
+    static final class Ins {
+        final int i; final double t; final int j; final double al;
+        Ins(int i, double t, int j, double al) { this.i = i; this.t = t; this.j = j; this.al = al; }
+    }
     static final class Snap { double d; int a, b; double[] pt; String line; }
     static final class Proj { double d, t, along, total; int i; double[] pt; }
 
@@ -36,9 +41,20 @@ public final class GuideEngine {
         final ArrayList<double[]> pts = new ArrayList<double[]>();
         final ArrayList<Boolean> fork = new ArrayList<Boolean>();
         final ArrayList<ArrayList<Edge>> adj = new ArrayList<ArrayList<Edge>>();
+        final ArrayList<ArrayList<Edge>> adjAll = new ArrayList<ArrayList<Edge>>();
         final ArrayList<Line> lines = new ArrayList<Line>();
-        int add(double[] p, boolean f) { pts.add(new double[]{p[0], p[1]}); fork.add(f); adj.add(new ArrayList<Edge>()); return pts.size() - 1; }
-        void link(int a, int b, double w) { adj.get(a).add(new Edge(b, w)); adj.get(b).add(new Edge(a, w)); }
+        int nClosed;
+        double cloLen;
+        String cloSig = "";
+        int add(double[] p, boolean f) {
+            pts.add(new double[]{p[0], p[1]}); fork.add(f);
+            adj.add(new ArrayList<Edge>()); adjAll.add(new ArrayList<Edge>());
+            return pts.size() - 1;
+        }
+        void link(int a, int b, double w, boolean closed) {
+            adjAll.get(a).add(new Edge(b, w)); adjAll.get(b).add(new Edge(a, w));
+            if (!closed) { adj.get(a).add(new Edge(b, w)); adj.get(b).add(new Edge(a, w)); }
+        }
         public boolean isEmpty() { return lines.isEmpty(); }
     }
 
@@ -55,7 +71,7 @@ public final class GuideEngine {
     public static final class Out {
         public String mode = "route";
         public final List<Ev> events = new ArrayList<Ev>();
-        public boolean poor;
+        public boolean poor, blocked;
         public double acc, rem = Double.NaN, eta = Double.NaN, v = V_DEF, bearing = Double.NaN, headingDeg = Double.NaN, offDist, dPost;
         public boolean hasNext, nextFork;
         public double nextDist, nextDelta;
@@ -67,12 +83,19 @@ public final class GuideEngine {
     public static final class State {
         Route route; Graph goalsFor; List<Snap> goals = new ArrayList<Snap>();
         long offSince, offAlert, utSince, utAlert, lastTs;
-        boolean offAlerted, arrived;
+        boolean offAlerted, arrived, blk, hasP;
+        String cloSig;
+        double cloLen, pRem;
+        int pN;
         final Map<String, Integer> ann = new HashMap<String, Integer>();
         final ArrayList<double[]> hist = new ArrayList<double[]>();   // {lat, lng, t}
         final ArrayList<double[]> samples = new ArrayList<double[]>(); // {t, rem}
         public void resetRoute() { route = null; goalsFor = null; }
-        public void resetAll() { route = null; goalsFor = null; goals = new ArrayList<Snap>(); offSince = 0; offAlert = 0; offAlerted = false; utSince = 0; utAlert = 0; ann.clear(); hist.clear(); samples.clear(); arrived = false; lastTs = 0; }
+        public void resetAll() {
+            route = null; goalsFor = null; goals = new ArrayList<Snap>(); offSince = 0; offAlert = 0; offAlerted = false;
+            utSince = 0; utAlert = 0; ann.clear(); hist.clear(); samples.clear(); arrived = false; lastTs = 0;
+            blk = false; cloSig = null; cloLen = 0; hasP = false;
+        }
     }
 
     /* ---------- geometrie ---------- */
@@ -105,7 +128,13 @@ public final class GuideEngine {
         return best;
     }
 
-    /* ---------- reseau ---------- */
+    /* ---------- reseau : embranchements, fins raccordees, portions fermees ---------- */
+    private static void put(Map<String, ArrayList<Ins>> ins, String key, int i, double t, int j) {
+        ArrayList<Ins> l = ins.get(key);
+        if (l == null) { l = new ArrayList<Ins>(); ins.put(key, l); }
+        l.add(new Ins(i, t, j, 0));
+    }
+
     public static Graph build(List<Chem> chems) {
         Graph G = new Graph();
         Map<String, Chem> by = new HashMap<String, Chem>();
@@ -120,43 +149,78 @@ public final class GuideEngine {
         ArrayList<int[]> conn = new ArrayList<int[]>();
         for (Chem c : chems) {
             Chem p = c.parent.length() > 0 ? by.get(c.parent) : null;
-            if (p == null || p == c) continue;
-            Proj pr = proj(p.geom, c.geom[0]);
-            if (pr == null || pr.d > JOIN) continue;
-            int j = G.add(pr.pt, true);
-            ArrayList<Ins> l = ins.get(p.key);
-            if (l == null) { l = new ArrayList<Ins>(); ins.put(p.key, l); }
-            l.add(new Ins(pr.i, pr.t, j));
-            conn.add(new int[]{j, vid.get(c.key)[0]});
+            if (p != null && p != c) {
+                Proj pr = proj(p.geom, c.geom[0]);
+                if (pr != null && pr.d <= JOIN) { int j = G.add(pr.pt, true); put(ins, p.key, pr.i, pr.t, j); conn.add(new int[]{j, vid.get(c.key)[0]}); }
+            }
+            Chem e = c.end.length() > 0 ? by.get(c.end) : null;
+            if (e != null && e != c) {
+                int last = c.geom.length - 1;
+                Proj pr = proj(e.geom, c.geom[last]);
+                if (pr != null && pr.d <= JOIN) { int j = G.add(pr.pt, true); put(ins, e.key, pr.i, pr.t, j); conn.add(new int[]{j, vid.get(c.key)[last]}); }
+            }
         }
+        ArrayList<String> sig = new ArrayList<String>();
+        double cloLen = 0;
         for (Chem c : chems) {
             int[] ids = vid.get(c.key);
-            ArrayList<Ins> list = new ArrayList<Ins>();
-            if (ins.get(c.key) != null) list.addAll(ins.get(c.key));
-            list.sort(new Comparator<Ins>() {
+            double[] cv = new double[c.geom.length];
+            for (int k = 1; k < cv.length; k++) cv[k] = cv[k - 1] + dist(c.geom[k - 1], c.geom[k]);
+            double total = cv[cv.length - 1];
+            ArrayList<double[]> cl = new ArrayList<double[]>();
+            for (double[] r : c.closed) if (r[1] - r[0] >= 0.5 && r[0] < total) cl.add(new double[]{Math.max(0, r[0]), Math.min(total, r[1])});
+            ArrayList<Ins> items = new ArrayList<Ins>();
+            ArrayList<Ins> src = ins.get(c.key);
+            if (src != null) for (Ins x : src) items.add(new Ins(x.i, x.t, x.j, cv[x.i] + x.t * (cv[x.i + 1] - cv[x.i])));
+            for (double[] r : cl) {
+                for (int z = 0; z < 2; z++) {
+                    double s = r[z];
+                    int i = 0;
+                    while (i < cv.length - 2 && cv[i + 1] < s) i++;
+                    double sg = cv[i + 1] - cv[i], t = sg > 0 ? Math.max(0, Math.min(1, (s - cv[i]) / sg)) : 0;
+                    double[] a = c.geom[i], b = c.geom[i + 1];
+                    int j = G.add(new double[]{a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t}, false);
+                    items.add(new Ins(i, t, j, s));
+                }
+            }
+            Collections.sort(items, new Comparator<Ins>() {
                 @Override public int compare(Ins a, Ins b) { if (a.i != b.i) return a.i - b.i; return Double.compare(a.t, b.t); }
             });
             ArrayList<Integer> seq = new ArrayList<Integer>();
+            ArrayList<Double> al = new ArrayList<Double>();
             for (int k = 0; k < ids.length; k++) {
-                seq.add(ids[k]);
-                if (k < ids.length - 1) for (Ins x : list) if (x.i == k) seq.add(x.j);
+                seq.add(ids[k]); al.add(cv[k]);
+                if (k < ids.length - 1) for (Ins x : items) if (x.i == k) { seq.add(x.j); al.add(x.al); }
             }
-            for (int k = 0; k < seq.size() - 1; k++) G.link(seq.get(k), seq.get(k + 1), dist(G.pts.get(seq.get(k)), G.pts.get(seq.get(k + 1))));
+            boolean[] ed = new boolean[Math.max(0, seq.size() - 1)];
+            for (int k = 0; k < seq.size() - 1; k++) {
+                double w = dist(G.pts.get(seq.get(k)), G.pts.get(seq.get(k + 1))), mid = (al.get(k) + al.get(k + 1)) / 2;
+                boolean closed = false;
+                if (w >= 0.05) for (double[] r : cl) if (mid >= r[0] - 0.01 && mid <= r[1] + 0.01) { closed = true; break; }
+                G.link(seq.get(k), seq.get(k + 1), w, closed);
+                ed[k] = closed;
+            }
             Line L = new Line();
-            L.key = c.key; L.posts = c.posts;
+            L.key = c.key; L.posts = c.posts; L.closed = ed;
             L.seq = new int[seq.size()];
             for (int k = 0; k < L.seq.length; k++) L.seq[k] = seq.get(k);
             G.lines.add(L);
+            for (double[] r : cl) { sig.add(c.key + ":" + Math.round(r[0]) + "-" + Math.round(r[1])); cloLen += r[1] - r[0]; }
         }
-        for (int[] x : conn) G.link(x[0], x[1], dist(G.pts.get(x[0]), G.pts.get(x[1])));
+        for (int[] x : conn) G.link(x[0], x[1], dist(G.pts.get(x[0]), G.pts.get(x[1])), false);
+        Collections.sort(sig);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < sig.size(); i++) { if (i > 0) sb.append('|'); sb.append(sig.get(i)); }
+        G.nClosed = sig.size(); G.cloSig = sb.toString(); G.cloLen = cloLen;
         return G;
     }
 
-    static Snap snap(Graph G, double[] p, String onlyLine) {
+    static Snap snap(Graph G, double[] p, String onlyLine, boolean all) {
         Snap best = null;
         for (Line L : G.lines) {
             if (onlyLine != null && !L.key.equals(onlyLine)) continue;
             for (int k = 0; k < L.seq.length - 1; k++) {
+                if (L.closed[k] && !all) continue;
                 int a = L.seq[k], b = L.seq[k + 1];
                 double[] A = G.pts.get(a), B = G.pts.get(b);
                 if (dist(A, B) < 0.01) continue;
@@ -167,22 +231,22 @@ public final class GuideEngine {
         return best;
     }
 
-    static List<Snap> goals(Graph G, int postN, double[] postPos) {
+    static List<Snap> goals(Graph G, int postN, double[] postPos, boolean all) {
         List<Snap> out = new ArrayList<Snap>();
         for (Line L : G.lines) {
             boolean serves = false;
             for (int n : L.posts) if (n == postN) serves = true;
             if (!serves) continue;
-            Snap s = snap(G, postPos, L.key);
+            Snap s = snap(G, postPos, L.key, all);
             if (s != null && s.d <= POST_TOL) out.add(s);
         }
-        if (out.isEmpty()) { Snap s = snap(G, postPos, null); if (s != null && s.d <= POST_TOL) out.add(s); }
+        if (out.isEmpty()) { Snap s = snap(G, postPos, null, all); if (s != null && s.d <= POST_TOL) out.add(s); }
         return out;
     }
 
     static final class Path { double len; ArrayList<Integer> ids; int goal; }
 
-    static Path path(Graph G, Snap s, List<Snap> goals) {
+    static Path path(Graph G, Snap s, List<Snap> goals, boolean all) {
         int n = G.pts.size(), V = n + 1 + goals.size();
         @SuppressWarnings("unchecked") ArrayList<Edge>[] extra = (ArrayList<Edge>[]) new ArrayList[V];
         addE(extra, n, s.a, dist(s.pt, G.pts.get(s.a)));
@@ -207,7 +271,7 @@ public final class GuideEngine {
             if (u < 0) break;
             done[u] = true;
             if (u > n) { end = u; break; }
-            if (u < n) for (Edge e : G.adj.get(u)) { double w = bd + e.w; if (!done[e.to] && w < dist[e.to]) { dist[e.to] = w; prev[e.to] = u; } }
+            if (u < n) for (Edge e : (all ? G.adjAll.get(u) : G.adj.get(u))) { double w = bd + e.w; if (!done[e.to] && w < dist[e.to]) { dist[e.to] = w; prev[e.to] = u; } }
             if (extra[u] != null) for (Edge e : extra[u]) { double w = bd + e.w; if (!done[e.to] && w < dist[e.to]) { dist[e.to] = w; prev[e.to] = u; } }
         }
         if (end < 0) return null;
@@ -278,11 +342,11 @@ public final class GuideEngine {
             Turn t = new Turn(); t.s = s; t.pt = v; t.delta = nd(brg(v, b) - brg(a, v)); t.dir = "straight"; t.fork = true;
             out.add(t);
         }
-        out.sort(new Comparator<Turn>() { @Override public int compare(Turn x, Turn y) { return Double.compare(x.s, y.s); } });
+        Collections.sort(out, new Comparator<Turn>() { @Override public int compare(Turn x, Turn y) { return Double.compare(x.s, y.s); } });
         return out;
     }
     static Route route(Graph G, Snap sn, List<Snap> goals, double[] postPos) {
-        Path best = path(G, sn, goals);
+        Path best = path(G, sn, goals, false);
         if (best == null) return null;
         int n = G.pts.size();
         ArrayList<double[]> pts = new ArrayList<double[]>();
@@ -335,8 +399,37 @@ public final class GuideEngine {
         return Double.NaN;
     }
 
-    /** Un pas de guidage. acc = 0 si inconnue, speed/heading = NaN si inconnus, ts = heure de la mesure (ms), now = heure actuelle (ms). */
+    /**
+     * Un pas de guidage. acc = 0 si inconnue, speed/heading = NaN si inconnus, ts = heure de la mesure (ms), now = heure actuelle (ms).
+     */
     public static Out step(State st, Graph G, int postN, double[] postPos, double lat, double lng, double acc0, long ts, double speed, double heading, long now) {
+        String sigNow = G != null ? G.cloSig : "";
+        Out out = stepCore(st, G, postN, postPos, lat, lng, acc0, ts, speed, heading, now);
+        out.blocked = false;
+        if (G != null && G.nClosed > 0 && out.mode.equals("direct")) {
+            double[] p = new double[]{lat, lng};
+            List<Snap> ga = goals(G, postN, postPos, true);
+            Snap sa = snap(G, p, null, true);
+            if (!ga.isEmpty() && sa != null && path(G, sa, ga, true) != null) out.blocked = true;
+        }
+        if (out.blocked) {
+            if (!st.blk) { st.blk = true; out.events.add(new Ev("blocked", true, "Poste inaccessible : portion de chemin fermée. Direction à vol d’oiseau.", new long[]{300, 150, 300}, "2")); }
+        } else if (!out.mode.equals("direct")) st.blk = false;
+        if (G != null) {
+            if (st.cloSig != null && !st.cloSig.equals(sigNow) && !out.blocked) {
+                boolean ch = !st.hasP || out.route == null || Math.abs(st.pRem - out.rem) >= 3 || st.pN != out.route.pts.length;
+                if (ch) {
+                    st.ann.clear();
+                    out.events.add(new Ev("reroute", true, G.cloLen > st.cloLen ? "Itinéraire modifié : portion de chemin fermée." : "Itinéraire recalculé : un passage a été rouvert.", new long[]{200, 100, 200, 100, 200}, null));
+                }
+            }
+            st.cloSig = sigNow; st.cloLen = G.cloLen;
+            if (out.route != null) { st.hasP = true; st.pRem = out.rem; st.pN = out.route.pts.length; } else st.hasP = false;
+        }
+        return out;
+    }
+
+    static Out stepCore(State st, Graph G, int postN, double[] postPos, double lat, double lng, double acc0, long ts, double speed, double heading, long now) {
         double[] p = new double[]{lat, lng};
         double acc = acc0 > 0 ? acc0 : 15;
         boolean poor = acc > ACC_POOR;
@@ -360,8 +453,8 @@ public final class GuideEngine {
             out.mode = "direct"; out.bearing = brg(p, postPos); out.rem = dPost; out.eta = now + dPost / V_DEF * 1000.0;
             return out;
         }
-        if (st.goalsFor != G) { st.goalsFor = G; st.goals = goals(G, postN, postPos); st.route = null; }
-        Snap sn = snap(G, p, null);
+        if (st.goalsFor != G) { st.goalsFor = G; st.goals = goals(G, postN, postPos, false); st.route = null; }
+        Snap sn = snap(G, p, null, false);
         Route nw = (sn != null && !st.goals.isEmpty()) ? route(G, sn, st.goals, postPos) : null;
         if (nw == null) {
             out.mode = "direct"; out.bearing = brg(p, postPos); out.rem = dPost; out.eta = now + dPost / V_DEF * 1000.0;
