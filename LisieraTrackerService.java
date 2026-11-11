@@ -441,6 +441,16 @@ public class LisieraTrackerService extends Service {
                         c.geom[k][0] = q.getDouble(0);
                         c.geom[k][1] = q.getDouble(1);
                     }
+                    c.end = co.optString("end", "");
+                    JSONArray cj = co.optJSONArray("closed");
+                    if (cj != null) {
+                        c.closed = new double[cj.length()][2];
+                        for (int k = 0; k < cj.length(); k++) {
+                            JSONArray cr = cj.getJSONArray(k);
+                            c.closed[k][0] = cr.getDouble(0);
+                            c.closed[k][1] = cr.getDouble(1);
+                        }
+                    }
                     JSONArray ps = co.optJSONArray("posts");
                     c.posts = new int[ps == null ? 0 : ps.length()];
                     for (int k = 0; k < c.posts.length; k++) c.posts[k] = ps.getInt(k);
@@ -535,7 +545,7 @@ public class LisieraTrackerService extends Service {
         if ("arrived".equals(o.mode)) t = "Poste " + gPostN + " atteint";
         else if ("off".equals(o.mode)) t = "Hors chemin : rejoignez-le (" + guideDist(o.offDist) + ")";
         else if ("uturn".equals(o.mode)) t = "Faites demi-tour";
-        else if ("direct".equals(o.mode)) t = "Poste " + gPostN + " : " + guideDist(o.rem) + " direction " + WK_DIRS[(int) (Math.round(o.bearing / 45.0) % 8)];
+        else if ("direct".equals(o.mode)) t = "Poste " + gPostN + " : " + guideDist(o.rem) + " direction " + WK_DIRS[(int) (Math.round(o.bearing / 45.0) % 8)] + (o.blocked ? " (portion fermée)" : "");
         else if (o.hasNext && o.nextDist <= 150.0) {
             String l = GuideEngine.lbl(o.nextDir);
             t = Character.toUpperCase(l.charAt(0)) + l.substring(1) + " dans " + guideDist(o.nextDist);
