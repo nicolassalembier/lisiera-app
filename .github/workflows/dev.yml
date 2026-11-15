@@ -84,3 +84,10 @@ jobs:
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk Lisiera-dev.apk
           gh release create "dev-${{ github.run_number }}" Lisiera-dev.apk --repo "$GITHUB_REPOSITORY" --prerelease --title "Lisiera Dev ${{ github.run_number }}" --notes "APK de test (fr.lisiera.app.dev), à côté de l'appli du test fermé Google."
+          # lien stable : toujours la dernière version dev
+          if gh release view dev-latest --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload dev-latest Lisiera-dev.apk --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit dev-latest --repo "$GITHUB_REPOSITORY" --prerelease --title "Lisiera Dev (dernière version)" --notes "Build ${{ github.run_number }}"
+          else
+            gh release create dev-latest Lisiera-dev.apk --repo "$GITHUB_REPOSITORY" --prerelease --title "Lisiera Dev (dernière version)" --notes "Build ${{ github.run_number }}"
+          fi
