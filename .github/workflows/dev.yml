@@ -55,6 +55,7 @@ jobs:
           npx cap add android
           python3 patch_android.py
           python3 patch_walker.py
+          python3 patch_feed.py
           python3 patch_dev.py
           npx cap sync android
       - name: Icône orange
